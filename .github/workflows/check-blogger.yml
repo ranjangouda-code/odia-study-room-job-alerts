@@ -1,9 +1,9 @@
-
 name: Blogger Job Alerts
 
 on:
   schedule:
     - cron: "*/15 * * * *"
+
   workflow_dispatch:
 
 permissions:
@@ -21,8 +21,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           ref: main
+          fetch-depth: 0
           persist-credentials: true
 
       - name: Set up Python
@@ -41,6 +41,8 @@ jobs:
         run: python monitor.py
 
       - name: Save notification history
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -e
 
@@ -56,21 +58,20 @@ jobs:
 
           git commit -m "Update notified job history"
 
-          # Synchronize with the latest remote main branch.
-          git fetch origin main
-          git rebase origin/main
-
-          # Push, retrying if another update reaches main.
+          # Retry if the remote main branch changes before the push.
           for attempt in 1 2 3; do
-            if git push origin HEAD:main; then
-              echo "Notification history saved successfully."
-              exit 0
-            fi
-
-            echo "Push attempt $attempt failed. Synchronizing again..."
+            echo "Push attempt: $attempt"
 
             git fetch origin main
             git rebase origin/main
+
+            if git push origin HEAD:main; then
+              echo "Notification history successfully saved."
+              exit 0
+            fi
+
+            echo "Push failed. Retrying..."
+            sleep 2
           done
 
           echo "Unable to push notification history after 3 attempts."
