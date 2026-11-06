@@ -3,7 +3,6 @@ name: Blogger Job Alerts
 on:
   schedule:
     - cron: "*/15 * * * *"
-
   workflow_dispatch:
 
 permissions:
@@ -23,7 +22,6 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -31,9 +29,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
       - name: Run Blogger monitor
         env:
@@ -41,8 +37,6 @@ jobs:
         run: python monitor.py
 
       - name: Save notification history
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -e
 
@@ -58,21 +52,7 @@ jobs:
 
           git commit -m "Update notified job history"
 
-          # Retry if the remote main branch changes before the push.
-          for attempt in 1 2 3; do
-            echo "Push attempt: $attempt"
+          git fetch origin main
+          git rebase origin/main
 
-            git fetch origin main
-            git rebase origin/main
-
-            if git push origin HEAD:main; then
-              echo "Notification history successfully saved."
-              exit 0
-            fi
-
-            echo "Push failed. Retrying..."
-            sleep 2
-          done
-
-          echo "Unable to push notification history after 3 attempts."
-          exit 1
+          git push origin HEAD:main
