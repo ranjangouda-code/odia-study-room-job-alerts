@@ -4,6 +4,7 @@ name: Blogger Job Alerts
 on:
   schedule:
     - cron: "*/15 * * * *"
+
   workflow_dispatch:
 
 permissions:
@@ -18,26 +19,34 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Step 1: Checkout the complete Git history
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
 
+      # Step 2: Configure Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      # Step 3: Install Python dependencies
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Step 4: Check Blogger and send notifications
       - name: Run Blogger monitor
         env:
           FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
         run: python monitor.py
 
+      # Step 5: Save notification history safely
       - name: Save notification history
         run: |
+          set -e
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -50,9 +59,21 @@ jobs:
 
           git commit -m "Update notified job history"
 
-          # Fetch the latest remote changes and rebase our commit.
-          git fetch origin main
-          git rebase origin/main
+          # Retry in case another remote commit arrives during the push.
+          for attempt in 1 2 3; do
+            echo "Push attempt $attempt"
 
-          # Push the updated branch.
-          git push origin HEAD:main
+            git fetch origin main
+            git rebase origin/main
+
+            if git push origin HEAD:main; then
+              echo "Notification history saved successfully."
+              exit 0
+            fi
+
+            echo "Push failed. Will retry if attempts remain."
+            sleep 2
+          done
+
+          echo "Unable to push notification history after 3 attempts."
+          exit 1
