@@ -97,6 +97,17 @@ def get_posts():
 
     feed = response.json().get("feed", {})
     entries = feed.get("entry", [])
+    print("Total Blogger entries:", len(entries))
+
+for entry in entries[:10]:
+    title = entry.get("title", {}).get("$t", "")
+    labels = [
+        item.get("term", "")
+        for item in entry.get("category", [])
+    ]
+
+    print("POST:", title)
+    print("LABELS:", labels)
 
     posts = []
 
