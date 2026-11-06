@@ -9,6 +9,10 @@ from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 
 
+# --------------------------------------------------
+# CONFIGURATION
+# --------------------------------------------------
+
 BLOGGER_FEED = (
     "https://www.odiastudyroom.in/feeds/posts/default"
     "?alt=json&max-results=50&orderby=published"
@@ -32,54 +36,124 @@ ALLOWED_CATEGORIES = {
 }
 
 
+# --------------------------------------------------
+# TEXT CLEANING
+# --------------------------------------------------
+
 def clean_html(value):
     value = re.sub(r"<[^>]+>", " ", value or "")
     value = html.unescape(value)
     return re.sub(r"\s+", " ", value).strip()
 
 
-def get_category(entry):
+def normalize_text(value):
+    value = clean_html(value).lower()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
 
-    labels = [
-        item.get("term", "").strip().lower()
-        for item in entry.get("category", [])
-    ]
 
-    mapping = [
-        ("admit card", "Admit Card"),
-        ("admit cards", "Admit Card"),
-        ("admit card out", "Admit Card"),
-        ("hall ticket", "Admit Card"),
+# --------------------------------------------------
+# CATEGORY DETECTION
+# --------------------------------------------------
 
-        ("exam date", "Exam Date"),
-        ("exam dates", "Exam Date"),
-        ("exam date out", "Exam Date"),
-        ("exam schedule", "Exam Date"),
+CATEGORY_RULES = [
+    (
+        "Admit Card",
+        [
+            "admit card",
+            "admit cards",
+            "hall ticket",
+            "call letter"
+        ]
+    ),
+    (
+        "Exam Date",
+        [
+            "exam date",
+            "exam dates",
+            "exam schedule",
+            "exam timetable",
+            "examination date"
+        ]
+    ),
+    (
+        "Results",
+        [
+            "result",
+            "results",
+            "merit list",
+            "score card",
+            "scorecard"
+        ]
+    ),
+    (
+        "Upcoming Jobs",
+        [
+            "upcoming job",
+            "upcoming jobs",
+            "upcoming recruitment",
+            "upcoming vacancy",
+            "upcoming vacancies"
+        ]
+    ),
+    (
+        "Latest Jobs",
+        [
+            "latest job",
+            "latest jobs",
+            "recruitment",
+            "government jobs",
+            "govt jobs",
+            "job notification",
+            "job notifications",
+            "vacancy",
+            "vacancies"
+        ]
+    )
+]
 
-        ("result", "Results"),
-        ("results", "Results"),
-        ("result out", "Results"),
-        ("merit list", "Results"),
 
-        ("upcoming job", "Upcoming Jobs"),
-        ("upcoming jobs", "Upcoming Jobs"),
-        ("upcoming recruitment", "Upcoming Jobs"),
-        ("upcoming vacancy", "Upcoming Jobs"),
+def detect_category(text):
+    normalized = normalize_text(text)
 
-        ("latest job", "Latest Jobs"),
-        ("latest jobs", "Latest Jobs"),
-        ("recruitment", "Latest Jobs"),
-        ("government jobs", "Latest Jobs"),
-        ("govt jobs", "Latest Jobs"),
-        ("job notification", "Latest Jobs")
-    ]
-
-    for label, category in mapping:
-        if label in labels:
-            return category
+    for category, keywords in CATEGORY_RULES:
+        for keyword in keywords:
+            if keyword in normalized:
+                return category
 
     return None
 
+
+def get_category(entry):
+
+    labels = []
+
+    for item in entry.get("category", []):
+        term = item.get("term", "")
+
+        if term:
+            labels.append(term.strip())
+
+    # First check Blogger labels.
+    for label in labels:
+        category = detect_category(label)
+
+        if category:
+            return category, labels, "label"
+
+    # If no label matches, check the post title.
+    title = entry.get("title", {}).get("$t", "")
+    category = detect_category(title)
+
+    if category:
+        return category, labels, "title"
+
+    return None, labels, "unmatched"
+
+
+# --------------------------------------------------
+# NOTIFICATION HISTORY
+# --------------------------------------------------
 
 def load_seen_posts():
 
@@ -88,23 +162,43 @@ def load_seen_posts():
 
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as file:
-            return set(json.load(file))
+            data = json.load(file)
 
-    except (json.JSONDecodeError, OSError):
+        if isinstance(data, list):
+            return set(data)
+
+        print("WARNING: Invalid notification history format.")
+        return set()
+
+    except (json.JSONDecodeError, OSError) as error:
+        print("WARNING: Could not read notification history:", error)
         return set()
 
 
 def save_seen_posts(seen):
 
-    with open(STATE_FILE, "w", encoding="utf-8") as file:
+    temporary_file = STATE_FILE + ".tmp"
+
+    with open(temporary_file, "w", encoding="utf-8") as file:
         json.dump(sorted(seen), file, indent=2)
 
+    os.replace(temporary_file, STATE_FILE)
+
+
+# --------------------------------------------------
+# FETCH BLOGGER POSTS
+# --------------------------------------------------
 
 def get_posts():
 
     print("Fetching Blogger feed...")
 
-    response = requests.get(BLOGGER_FEED, timeout=30)
+    response = requests.get(
+        BLOGGER_FEED,
+        headers={"User-Agent": "OdiaStudyRoomJobAlerts/1.0"},
+        timeout=30
+    )
+
     response.raise_for_status()
 
     feed = response.json().get("feed", {})
@@ -112,16 +206,26 @@ def get_posts():
 
     posts = []
 
+    print("Total Blogger entries:", len(entries))
+
     for entry in entries:
-
-        category = get_category(entry)
-
-        if category not in ALLOWED_CATEGORIES:
-            continue
 
         title = clean_html(
             entry.get("title", {}).get("$t", "")
         )
+
+        category, labels, matched_by = get_category(entry)
+
+        print("\n--------------------------------")
+        print("Post:", title)
+        print("Blogger labels:", labels)
+
+        if category not in ALLOWED_CATEGORIES:
+            print("SKIPPED: No eligible category matched.")
+            continue
+
+        print("Category:", category)
+        print("Matched using:", matched_by)
 
         links = entry.get("link", [])
 
@@ -130,12 +234,13 @@ def get_posts():
                 link.get("href")
                 for link in links
                 if link.get("rel") == "alternate"
-                and link.get("type") == "text/html"
+                and link.get("href")
             ),
             None
         )
 
         if not title or not url:
+            print("SKIPPED: Missing title or article URL.")
             continue
 
         parsed_url = urlparse(url)
@@ -144,6 +249,7 @@ def get_posts():
             parsed_url.scheme != "https"
             or parsed_url.hostname != "www.odiastudyroom.in"
         ):
+            print("SKIPPED: Invalid article URL:", url)
             continue
 
         published = entry.get("published", {}).get("$t", "")
@@ -153,7 +259,7 @@ def get_posts():
             or entry.get("content", {}).get("$t", "")
         )
 
-        summary = clean_html(content)[:500]
+        summary = clean_html(content)[:300]
 
         posts.append({
             "id": url,
@@ -164,10 +270,18 @@ def get_posts():
             "summary": summary
         })
 
+        print("ACCEPTED:", title)
+
+    print("\n================================")
     print("Eligible posts found:", len(posts))
+    print("================================")
 
     return posts
 
+
+# --------------------------------------------------
+# FIREBASE ACCESS TOKEN
+# --------------------------------------------------
 
 def get_access_token():
 
@@ -192,6 +306,10 @@ def get_access_token():
     return credentials.token
 
 
+# --------------------------------------------------
+# SEND FIREBASE NOTIFICATION
+# --------------------------------------------------
+
 def send_notification(post, access_token):
 
     summary = (
@@ -206,7 +324,7 @@ def send_notification(post, access_token):
             "topic": "all_job_alerts",
 
             "data": {
-                "title": post["title"],
+                "title": post["title"][:200],
                 "body": body,
                 "url": post["url"],
                 "date": post["date"],
@@ -235,8 +353,13 @@ def send_notification(post, access_token):
             f"FCM error {response.status_code}: {response.text}"
         )
 
-    print("Notification sent:", post["title"])
+    print("Firebase notification sent:", post["title"])
+    print("Firebase response:", response.text)
 
+
+# --------------------------------------------------
+# MAIN MONITOR
+# --------------------------------------------------
 
 def main():
 
@@ -246,14 +369,20 @@ def main():
 
     seen = load_seen_posts()
 
-    # First run: save existing posts without sending old alerts.
+    # First run: save existing eligible posts without
+    # sending old notifications.
     if seen is None:
 
         save_seen_posts({
             post["id"] for post in posts
         })
 
-        print("Initial setup completed. Existing posts saved.")
+        print(
+            "Initial setup completed.",
+            len(posts),
+            "existing eligible posts saved."
+        )
+
         return
 
     new_posts = [
@@ -262,7 +391,6 @@ def main():
     ]
 
     if not new_posts:
-
         print("No new job notifications.")
         return
 
@@ -270,18 +398,23 @@ def main():
 
     access_token = get_access_token()
 
+    sent_count = 0
+
     for post in new_posts:
 
+        # Send first. Only mark a post as seen after
+        # Firebase accepts the message.
         send_notification(post, access_token)
 
         seen.add(post["id"])
+        save_seen_posts(seen)
 
-    save_seen_posts(seen)
+        sent_count += 1
 
     print(
         "Completed:",
-        len(new_posts),
-        "new notifications sent."
+        sent_count,
+        "new notifications sent successfully."
     )
 
 
