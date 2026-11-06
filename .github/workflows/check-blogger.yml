@@ -4,7 +4,6 @@ name: Blogger Job Alerts
 on:
   schedule:
     - cron: "*/15 * * * *"
-
   workflow_dispatch:
 
 permissions:
@@ -51,6 +50,9 @@ jobs:
 
           git commit -m "Update notified job history"
 
-          git pull --rebase origin main
+          # Fetch the latest remote changes and rebase our commit.
+          git fetch origin main
+          git rebase origin/main
 
+          # Push the updated branch.
           git push origin HEAD:main
